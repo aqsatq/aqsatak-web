@@ -1,0 +1,239 @@
+-- تصفير آمن لأي جزء انسوى سابقاً بالخطأ
+drop schema public cascade;
+create schema public;
+grant all on schema public to postgres;
+grant all on schema public to public;
+
+-- =====================================================================
+-- إدارة أقساطك — Supabase Schema
+-- =====================================================================
+
+create extension if not exists "uuid-ossp";
+
+create type user_role as enum ('super_admin','owner','manager','employee');
+
+create table profiles (
+  id            uuid primary key references auth.users(id) on delete cascade,
+  company_id    uuid,
+  role          user_role not null default 'employee',
+  full_name     varchar(255) not null,
+  phone         varchar(20),
+  must_reset_pw boolean default true,
+  created_at    timestamptz default now()
+);
+
+create table companies (
+  id             uuid primary key default uuid_generate_v4(),
+  name           varchar(255) not null,
+  phone          varchar(20) not null,
+  address        text,
+  logo_url       text,
+  activity_type  varchar(100),
+  status         varchar(20) default 'active' check (status in ('active','suspended','deleted')),
+  created_at     timestamptz default now()
+);
+
+alter table profiles add constraint fk_profile_company
+  foreign key (company_id) references companies(id) on delete cascade;
+
+create table subscription_plans (
+  id            smallint primary key,
+  code          varchar(20) unique not null,
+  name_ar       varchar(100) not null,
+  duration_days int not null
+);
+insert into subscription_plans values
+ (1,'trial','تجربة يومية',1),
+ (2,'monthly','اشتراك شهري',30),
+ (3,'yearly','اشتراك سنوي',365);
+
+create table subscriptions (
+  id          uuid primary key default uuid_generate_v4(),
+  company_id  uuid not null references companies(id) on delete cascade,
+  plan_id     smallint not null references subscription_plans(id),
+  starts_at   timestamptz not null default now(),
+  ends_at     timestamptz not null,
+  status      varchar(20) default 'active' check (status in ('active','expired','stopped','renewed')),
+  created_at  timestamptz default now()
+);
+
+create table clients (
+  id                      uuid primary key default uuid_generate_v4(),
+  company_id              uuid not null references companies(id) on delete cascade,
+  client_code             varchar(20) unique not null,
+  access_code             varchar(20) unique not null,
+  public_slug             varchar(30) unique not null,
+  full_name               varchar(255) not null,
+  phone                   varchar(20) not null,
+  address                 text,
+  profession              varchar(150),
+  notes                   text,
+  photo_url               text,
+  national_id_front_url   text,
+  national_id_back_url    text,
+  ocr_full_name           varchar(255),
+  ocr_national_id         varchar(50),
+  ocr_issue_date          date,
+  ocr_expiry_date         date,
+  ocr_reviewed            boolean default false,
+  created_by              uuid references profiles(id),
+  created_at              timestamptz default now()
+);
+
+create table guarantors (
+  id                    uuid primary key default uuid_generate_v4(),
+  client_id             uuid not null references clients(id) on delete cascade,
+  full_name             varchar(255) not null,
+  phone                 varchar(20) not null,
+  address               text,
+  photo_url             text,
+  national_id_front_url text,
+  national_id_back_url  text,
+  created_at            timestamptz default now()
+);
+
+create table contracts (
+  id                  uuid primary key default uuid_generate_v4(),
+  company_id          uuid not null references companies(id) on delete cascade,
+  client_id           uuid not null references clients(id) on delete cascade,
+  item_name           varchar(255) not null,
+  item_value          numeric(14,2) not null,
+  down_payment        numeric(14,2) not null default 0,
+  installments_count  int not null,
+  installment_amount  numeric(14,2) not null,
+  remaining_amount    numeric(14,2) not null,
+  contract_date       date not null,
+  first_due_date      date not null,
+  pdf_url             text,
+  status              varchar(20) default 'active' check (status in ('active','completed','cancelled')),
+  created_by          uuid references profiles(id),
+  created_at          timestamptz default now()
+);
+
+create table installments (
+  id              uuid primary key default uuid_generate_v4(),
+  contract_id     uuid not null references contracts(id) on delete cascade,
+  installment_no  int not null,
+  due_date        date not null,
+  amount          numeric(14,2) not null,
+  status          varchar(20) default 'pending' check (status in ('pending','due','paid','late')),
+  paid_at         timestamptz,
+  unique(contract_id, installment_no)
+);
+
+create table payments (
+  id              uuid primary key default uuid_generate_v4(),
+  installment_id  uuid not null references installments(id) on delete cascade,
+  amount_paid     numeric(14,2) not null,
+  payment_method  varchar(30) default 'cash',
+  gateway_ref     varchar(100),
+  received_by     uuid references profiles(id),
+  paid_at         timestamptz default now()
+);
+
+create table notifications (
+  id          uuid primary key default uuid_generate_v4(),
+  company_id  uuid references companies(id) on delete cascade,
+  client_id   uuid references clients(id) on delete cascade,
+  channel     varchar(20) not null,
+  type        varchar(30) not null,
+  message     text not null,
+  sent_at     timestamptz,
+  status      varchar(20) default 'pending' check (status in ('pending','sent','failed')),
+  created_at  timestamptz default now()
+);
+
+create table audit_logs (
+  id          uuid primary key default uuid_generate_v4(),
+  actor_id    uuid references profiles(id),
+  company_id  uuid references companies(id),
+  action      varchar(100) not null,
+  entity_type varchar(50),
+  entity_id   uuid,
+  metadata    jsonb,
+  created_at  timestamptz default now()
+);
+
+alter table companies enable row level security;
+alter table clients enable row level security;
+alter table contracts enable row level security;
+alter table installments enable row level security;
+alter table payments enable row level security;
+alter table subscriptions enable row level security;
+alter table guarantors enable row level security;
+alter table profiles enable row level security;
+
+create or replace function is_super_admin() returns boolean as $$
+  select exists (
+    select 1 from profiles where id = auth.uid() and role = 'super_admin'
+  );
+$$ language sql security definer;
+
+create or replace function my_company_id() returns uuid as $$
+  select company_id from profiles where id = auth.uid();
+$$ language sql security definer;
+
+create policy "profiles_self_or_admin" on profiles
+  for select using (id = auth.uid() or is_super_admin());
+
+create policy "companies_isolated" on companies
+  for all using (is_super_admin() or id = my_company_id());
+
+create policy "clients_isolated" on clients
+  for all using (is_super_admin() or company_id = my_company_id());
+
+create policy "contracts_isolated" on contracts
+  for all using (is_super_admin() or company_id = my_company_id());
+
+create policy "subscriptions_isolated" on subscriptions
+  for all using (is_super_admin() or company_id = my_company_id());
+
+create policy "installments_isolated" on installments
+  for all using (
+    is_super_admin() or
+    contract_id in (select id from contracts where company_id = my_company_id())
+  );
+
+create policy "payments_isolated" on payments
+  for all using (
+    is_super_admin() or
+    installment_id in (
+      select i.id from installments i
+      join contracts c on c.id = i.contract_id
+      where c.company_id = my_company_id()
+    )
+  );
+
+create policy "guarantors_isolated" on guarantors
+  for all using (
+    is_super_admin() or
+    client_id in (select id from clients where company_id = my_company_id())
+  );
+
+create or replace function recalc_contract_remaining() returns trigger as $$
+begin
+  update contracts c
+  set remaining_amount = c.item_value - c.down_payment - (
+    select coalesce(sum(p.amount_paid),0)
+    from payments p join installments i on i.id = p.installment_id
+    where i.contract_id = (select contract_id from installments where id = new.installment_id)
+  )
+  where c.id = (select contract_id from installments where id = new.installment_id);
+
+  update installments set status = 'paid', paid_at = now() where id = new.installment_id;
+  return new;
+end;
+$$ language plpgsql security definer;
+
+create trigger trg_recalc_remaining
+after insert on payments
+for each row execute function recalc_contract_remaining();
+
+insert into storage.buckets (id, name, public) values ('client-photos','client-photos', false)
+  on conflict (id) do nothing;
+insert into storage.buckets (id, name, public) values ('national-ids','national-ids', false)
+  on conflict (id) do nothing;
+insert into storage.buckets (id, name, public) values ('contracts-pdf','contracts-pdf', false)
+  on conflict (id) do nothing;
+insert into storage.buckets (id, name, public) values ('company-logos','company-logos', true)
+  on conflict (id) do nothing;
