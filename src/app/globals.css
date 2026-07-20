@@ -1,0 +1,33 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background: radial-gradient(circle at 20% 0%, #16070a 0%, #08080b 45%, #050506 100%);
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  backdrop-filter: blur(14px);
+}
+
+.brand-gradient {
+  background: linear-gradient(90deg, #fff, #e8c766);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.neon-red {
+  box-shadow: 0 0 14px rgba(212, 17, 31, 0.5);
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #d4111f, #8a0303);
+  transition: 0.2s;
+}
+.btn-primary:hover {
+  filter: brightness(1.15);
+  box-shadow: 0 0 18px rgba(212, 17, 31, 0.5);
+}
